@@ -19,6 +19,7 @@ from pathlib import Path
 import anthropic
 
 from kb_log import append_log
+from kb_state import record_cost
 
 VAULT = Path("/mnt/d/core")
 MODEL = "claude-sonnet-4-6"
@@ -99,7 +100,7 @@ def build_context(vault: Path, slugs: list[str]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def generate_answer(client: anthropic.Anthropic, question: str, context: str, fmt: str, model: str) -> str:
+def generate_answer(client: anthropic.Anthropic, question: str, context: str, fmt: str, model: str, vault: Path = None) -> str:
     format_instruction = {
         "md": "Write a detailed markdown article answering the question.",
         "marp": "Write a Marp slide deck (marp: true frontmatter, --- slide separators) answering the question.",
@@ -119,6 +120,8 @@ Relevant knowledge base articles:
         system=QUERY_SYSTEM,
         messages=[{"role": "user", "content": prompt}]
     )
+    if vault:
+        record_cost(vault, "query", response.usage.input_tokens, response.usage.output_tokens)
     return response.content[0].text
 
 
@@ -182,15 +185,18 @@ def main():
     context = build_context(vault, slugs)
 
     print("Generating answer ...")
-    answer = generate_answer(client, args.question, context, args.format, args.model)
+    answer = generate_answer(client, args.question, context, args.format, args.model, vault)
 
     out_path = save_output(vault, args.question, answer, args.format, args.file_into_wiki)
     update_meta(vault)
     wiki_flag = " [→wiki]" if args.file_into_wiki else ""
     append_log(vault, "query", args.question[:80] + wiki_flag)
 
+    from kb_state import load_state
+    costs = load_state(vault)["costs"]
     print(f"\nAnswer saved: {out_path}")
     print(f"Open in Obsidian: {out_path.relative_to(vault)}")
+    print(f"Cumulative API cost: ${costs['total_cost_usd']:.4f}")
 
 
 if __name__ == "__main__":

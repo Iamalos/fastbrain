@@ -18,6 +18,7 @@ from pathlib import Path
 import anthropic
 
 from kb_log import append_log
+from kb_state import mark_compiled_hash, needs_recompile, record_cost
 
 VAULT = Path("/mnt/d/core")
 MODEL = "claude-sonnet-4-6"
@@ -60,10 +61,10 @@ def read_file(path: Path) -> str:
 
 
 def get_uncompiled_sources(vault: Path) -> list[Path]:
+    """Return sources that are new (compiled: false) or changed since last compile."""
     sources = []
     for md in (vault / "raw").rglob("*.md"):
-        text = md.read_text(encoding="utf-8")
-        if "compiled: false" in text:
+        if needs_recompile(vault, md):
             sources.append(md)
     return sources
 
@@ -104,6 +105,9 @@ Return JSON as specified."""
         system=COMPILE_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
+
+    usage = response.usage
+    record_cost(vault, "compile", usage.input_tokens, usage.output_tokens)
 
     text = response.content[0].text.strip()
     # Extract JSON from response (handle markdown code blocks)
@@ -155,10 +159,11 @@ def update_index(vault: Path, source_path: Path, source_summary: str, index_addi
     index_path.write_text(text, encoding="utf-8")
 
 
-def mark_compiled(source_path: Path) -> None:
+def mark_compiled(vault: Path, source_path: Path) -> None:
     text = source_path.read_text(encoding="utf-8")
     text = text.replace("compiled: false", "compiled: true")
     source_path.write_text(text, encoding="utf-8")
+    mark_compiled_hash(vault, source_path)
 
 
 def update_meta(vault: Path) -> None:
@@ -185,7 +190,11 @@ def main():
     client = anthropic.Anthropic()
 
     if args.force:
-        # Mark all sources as uncompiled
+        # Mark all sources as uncompiled and clear hashes
+        from kb_state import load_state, save_state
+        state = load_state(vault)
+        state["compiled_hashes"] = {}
+        save_state(vault, state)
         for md in (vault / "raw").rglob("*.md"):
             text = md.read_text(encoding="utf-8")
             if "compiled: true" in text:
@@ -209,7 +218,7 @@ def main():
                 existing_concepts[concept["slug"]] = concept["content"]
 
             update_index(vault, source, result.get("source_summary", ""), result.get("index_additions", []))
-            mark_compiled(source)
+            mark_compiled(vault, source)
 
             concept_slugs = [c["slug"] for c in result.get("concepts", [])]
             log_title = f"{source.stem} → {', '.join(concept_slugs[:3])}"
@@ -222,7 +231,13 @@ def main():
             continue
 
     update_meta(vault)
+
+    from kb_state import load_state
+    state = load_state(vault)
+    costs = state["costs"]
     print(f"\nDone. Wiki updated at {vault}/wiki/")
+    print(f"Cumulative API cost: ${costs['total_cost_usd']:.4f} "
+          f"({costs['total_input_tokens']:,} in / {costs['total_output_tokens']:,} out tokens)")
 
 
 if __name__ == "__main__":

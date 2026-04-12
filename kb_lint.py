@@ -21,6 +21,7 @@ from pathlib import Path
 import anthropic
 
 from kb_log import append_log
+from kb_state import record_cost
 
 VAULT = Path("/mnt/d/core")
 MODEL = "claude-sonnet-4-6"
@@ -76,6 +77,30 @@ def find_orphans(vault: Path) -> list[str]:
     return orphans
 
 
+def find_missing_backlinks(vault: Path) -> list[dict]:
+    """Find asymmetric wikilinks: A→B exists but B→A does not.
+
+    Returns list of {"source": slug, "target": slug} pairs.
+    """
+    concepts_dir = vault / "wiki" / "concepts"
+    # Build map: slug → set of slugs it links to
+    outlinks: dict[str, set[str]] = {}
+    for f in concepts_dir.glob("*.md"):
+        links = find_wikilinks(f.read_text(encoding="utf-8"))
+        # Normalise: strip "concepts/" prefix
+        normalised = {l.replace("concepts/", "").split("|")[0].strip() for l in links}
+        outlinks[f.stem] = normalised
+
+    missing = []
+    for source, targets in outlinks.items():
+        for target in targets:
+            if target not in outlinks:
+                continue  # dead link — caught by dead-link check
+            if source not in outlinks[target]:
+                missing.append({"source": source, "target": target})
+    return missing
+
+
 def run_llm_audit(client: anthropic.Anthropic, vault: Path) -> dict:
     concepts_dir = vault / "wiki" / "concepts"
     concept_files = list(concepts_dir.glob("*.md"))
@@ -114,6 +139,8 @@ Identify orphans, gaps, inconsistencies, and new article candidates. Return JSON
         messages=[{"role": "user", "content": prompt}]
     )
 
+    record_cost(vault, "lint", response.usage.input_tokens, response.usage.output_tokens)
+
     text = response.content[0].text.strip()
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
@@ -124,7 +151,7 @@ Identify orphans, gaps, inconsistencies, and new article candidates. Return JSON
     return json.loads(text)
 
 
-def write_lint_report(vault: Path, structural_orphans: list[str], audit: dict) -> Path:
+def write_lint_report(vault: Path, structural_orphans: list[str], missing_backlinks: list[dict], audit: dict) -> Path:
     today = date.today()
     report_path = vault / "outputs" / f"lint_report_{today}.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +188,16 @@ def write_lint_report(vault: Path, structural_orphans: list[str], audit: dict) -
         for issue in inconsistencies:
             articles = ", ".join(f"[[concepts/{a}]]" for a in issue.get("articles", []))
             lines.append(f"- {articles}: {issue.get('issue', '')}")
+    else:
+        lines.append("- None found ✓")
+
+    lines.append("\n## Missing Backlinks (A→B exists but B→A does not)")
+    if missing_backlinks:
+        for pair in missing_backlinks:
+            lines.append(
+                f"- [[concepts/{pair['source']}]] → [[concepts/{pair['target']}]] "
+                f"— add backlink in `{pair['target']}.md`"
+            )
     else:
         lines.append("- None found ✓")
 
@@ -201,22 +238,29 @@ def main():
     if structural_orphans:
         print(f"Found {len(structural_orphans)} orphan(s): {', '.join(structural_orphans)}")
 
+    missing_backlinks = find_missing_backlinks(vault)
+    if missing_backlinks:
+        print(f"Found {len(missing_backlinks)} missing backlink(s)")
+
     print("Running LLM audit ...")
     try:
-        audit = run_llm_audit(client, vault)
+        audit = run_llm_audit(client, vault)  # vault already passed
     except Exception as e:
         print(f"LLM audit failed: {e}", file=sys.stderr)
         audit = {"orphans": [], "gaps": [], "inconsistencies": [], "new_article_candidates": [],
                  "health_score": "?", "summary": f"LLM audit failed: {e}"}
 
-    report_path = write_lint_report(vault, structural_orphans, audit)
+    report_path = write_lint_report(vault, structural_orphans, missing_backlinks, audit)
     update_meta(vault)
     health = audit.get("health_score", "?")
     append_log(vault, "lint", f"Health score {health}/100")
 
+    from kb_state import load_state
+    costs = load_state(vault)["costs"]
     print(f"\nHealth score: {audit.get('health_score', '?')}/100")
     print(f"Report saved: {report_path}")
     print(f"Open in Obsidian: {report_path.relative_to(vault)}")
+    print(f"Cumulative API cost: ${costs['total_cost_usd']:.4f}")
 
 
 if __name__ == "__main__":
