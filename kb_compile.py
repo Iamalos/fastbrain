@@ -33,14 +33,13 @@ Wiki conventions:
 
 When given a source document, you:
 1. Identify 2-6 key concepts it covers
-2. For each concept, return a CREATE or UPDATE action with the full article content
+2. For each concept, return the full article content (create or update as needed)
 3. Return an UPDATE_INDEX action with the updated _index.md content
 
 Respond ONLY with JSON in this exact format:
 {
   "concepts": [
     {
-      "action": "create" | "update",
       "slug": "concept-slug",
       "title": "Concept Title",
       "content": "full markdown content with frontmatter"
@@ -54,18 +53,15 @@ Respond ONLY with JSON in this exact format:
 
 
 def read_file(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except Exception:
-        return ""
+    try: return path.read_text(encoding="utf-8")
+    except Exception: return ""
 
 
 def get_uncompiled_sources(vault: Path) -> list[Path]:
     """Return sources that are new (compiled: false) or changed since last compile."""
     sources = []
     for md in (vault / "raw").rglob("*.md"):
-        if needs_recompile(vault, md):
-            sources.append(md)
+        if needs_recompile(vault, md): sources.append(md)
     return sources
 
 
@@ -101,7 +97,7 @@ Return JSON as specified."""
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=4096,
+        max_tokens=16384,
         system=COMPILE_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -125,7 +121,7 @@ def apply_concept(vault: Path, concept: dict) -> None:
     slug = concept["slug"]
     path = concepts_dir / f"{slug}.md"
     path.write_text(concept["content"], encoding="utf-8")
-    print(f"  {'Created' if concept['action'] == 'create' else 'Updated'}: wiki/concepts/{slug}.md")
+    print(f"  Wrote: wiki/concepts/{slug}.md")
 
 
 def update_index(vault: Path, source_path: Path, source_summary: str, index_additions: list[str]) -> None:
@@ -141,13 +137,14 @@ def update_index(vault: Path, source_path: Path, source_summary: str, index_addi
             text = text.replace("<!-- Claude maintains this section. Format: - [[concept]] — one-line summary -->",
                                 f"<!-- Claude maintains this section. Format: - [[concept]] — one-line summary -->\n{addition}")
 
-    # Add source entry
-    text = re.sub(
-        r"(## Recent Sources\n(?:<!-- .+? -->)?\n?)",
-        rf"\1{source_link}\n",
-        text,
-        count=1,
-    )
+    # Add source entry (skip if already present)
+    if source_link not in text:
+        text = re.sub(
+            r"(## Recent Sources\n)",
+            rf"\1{source_link}\n",
+            text,
+            count=1,
+        )
 
     # Update stats
     concept_count = len(list((vault / "wiki" / "concepts").glob("*.md")))
@@ -168,8 +165,7 @@ def mark_compiled(vault: Path, source_path: Path) -> None:
 
 def update_meta(vault: Path) -> None:
     meta_path = vault / "wiki" / "_meta.md"
-    if not meta_path.exists():
-        return
+    if not meta_path.exists(): return
     text = meta_path.read_text(encoding="utf-8")
     concept_count = len(list((vault / "wiki" / "concepts").glob("*.md")))
     source_count = len(list((vault / "raw").rglob("*.md")))
