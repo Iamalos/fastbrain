@@ -74,9 +74,10 @@ def download_images(url: str, vault: Path) -> list[str]:
             try:
                 ext = img_url.split("?")[0].rsplit(".", 1)[-1][:4] or "jpg"
                 fname = images_dir / f"{slugify(url[:40])}-{i}.{ext}"
-                page.goto(img_url, timeout=10000)
-                page.screenshot(path=str(fname))
-                saved.append(str(fname.relative_to(vault)))
+                resp = page.request.get(img_url, timeout=10000)
+                resp.dispose() if not resp.ok else fname.write_bytes(resp.body())
+                if resp.ok:
+                    saved.append(str(fname.relative_to(vault)))
             except Exception:
                 pass
 
@@ -126,6 +127,7 @@ compiled: false
 ---
 
 """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(frontmatter + content + img_section, encoding="utf-8")
     return out_path
 
