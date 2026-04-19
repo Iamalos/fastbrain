@@ -139,11 +139,9 @@ def update_index(vault: Path, source_path: Path, source_summary: str, index_addi
 
     # Add source entry (skip if already present)
     if source_link not in text:
-        text = re.sub(
-            r"(## Recent Sources\n)",
-            rf"\1{source_link}\n",
-            text,
-            count=1,
+        text = text.replace(
+            "<!-- Claude maintains this section. Format: - [[raw/web/article]] — one-line summary (date) -->",
+            f"<!-- Claude maintains this section. Format: - [[raw/web/article]] — one-line summary (date) -->\n{source_link}",
         )
 
     # Update stats
@@ -158,6 +156,7 @@ def update_index(vault: Path, source_path: Path, source_summary: str, index_addi
 
 def mark_compiled(vault: Path, source_path: Path) -> None:
     text = source_path.read_text(encoding="utf-8")
+    text = text.replace('compiled: "false"', "compiled: true")
     text = text.replace("compiled: false", "compiled: true")
     source_path.write_text(text, encoding="utf-8")
     mark_compiled_hash(vault, source_path)
@@ -223,7 +222,9 @@ def main():
             print(f"  Compiled successfully.")
 
         except Exception as e:
+            import traceback
             print(f"  Error: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             continue
 
     update_meta(vault)
