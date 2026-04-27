@@ -84,5 +84,7 @@ def needs_recompile(vault: Path, source_path: Path) -> bool:
     state = load_state(vault)
     stored_hash = state["compiled_hashes"].get(rel)
     if stored_hash is None:
-        return True  # compiled: true but no hash recorded yet — first time seeing it
+        # File says compiled: true but hash missing (e.g. compiled on another machine) — backfill and skip
+        mark_compiled_hash(vault, source_path)
+        return False
     return file_hash(source_path) != stored_hash

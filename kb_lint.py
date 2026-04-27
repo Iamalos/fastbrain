@@ -18,13 +18,18 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-import anthropic
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
 
 from kb_log import append_log
 from kb_state import record_cost
 
 VAULT = Path("/mnt/d/core")
-MODEL = "claude-sonnet-4-6"
+MODEL = "anthropic/claude-sonnet-4-6"
 
 LINT_SYSTEM = """You are a knowledge base auditor. You check wikis for quality issues.
 
@@ -101,7 +106,7 @@ def find_missing_backlinks(vault: Path) -> list[dict]:
     return missing
 
 
-def run_llm_audit(client: anthropic.Anthropic, vault: Path) -> dict:
+def run_llm_audit(client: OpenAI, vault: Path) -> dict:
     concepts_dir = vault / "wiki" / "concepts"
     concept_files = list(concepts_dir.glob("*.md"))
 
@@ -132,16 +137,18 @@ Sample sources (for gap detection):{raw_samples if raw_samples else "(no sources
 
 Identify orphans, gaps, inconsistencies, and new article candidates. Return JSON."""
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=MODEL,
         max_tokens=2048,
-        system=LINT_SYSTEM,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[
+            {"role": "system", "content": LINT_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
     )
 
-    record_cost(vault, "lint", response.usage.input_tokens, response.usage.output_tokens)
+    record_cost(vault, "lint", response.usage.prompt_tokens, response.usage.completion_tokens)
 
-    text = response.content[0].text.strip()
+    text = response.choices[0].message.content.strip()
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
@@ -231,7 +238,10 @@ def main():
     args = parser.parse_args()
 
     vault = Path(args.vault)
-    client = anthropic.Anthropic()
+    client = OpenAI(
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        base_url="https://openrouter.ai/api/v1",
+    )
 
     print("Running structural checks ...")
     structural_orphans = find_orphans(vault)

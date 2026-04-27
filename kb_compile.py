@@ -10,18 +10,22 @@ wiki/concepts/*.md articles with backlinks. The _index.md is regenerated each ru
 """
 
 import argparse
+import os
 import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
 
-import anthropic
+from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from kb_log import append_log
 from kb_state import mark_compiled_hash, needs_recompile, record_cost
 
 VAULT = Path("/mnt/d/core")
-MODEL = "claude-sonnet-4-6"
+MODEL = "anthropic/claude-sonnet-4-6"
 
 COMPILE_SYSTEM = """You are a knowledge base compiler. You read source documents and maintain a wiki of concept articles.
 
@@ -74,7 +78,7 @@ def get_existing_concepts(vault: Path) -> dict[str, str]:
     return result
 
 
-def compile_source(client: anthropic.Anthropic, source_path: Path, vault: Path, existing_concepts: dict) -> dict:
+def compile_source(client: OpenAI, source_path: Path, vault: Path, existing_concepts: dict) -> dict:
     source_content = read_file(source_path)
 
     # Build context: existing index + relevant existing concepts
@@ -95,17 +99,19 @@ New source to compile ({source_path.relative_to(vault)}):
 Compile this source into the wiki. Update or create concept articles as needed.
 Return JSON as specified."""
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=MODEL,
         max_tokens=16384,
-        system=COMPILE_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": COMPILE_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
     )
 
     usage = response.usage
-    record_cost(vault, "compile", usage.input_tokens, usage.output_tokens)
+    record_cost(vault, "compile", usage.prompt_tokens, usage.completion_tokens)
 
-    text = response.content[0].text.strip()
+    text = response.choices[0].message.content.strip()
     # Extract JSON from response (handle markdown code blocks)
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
@@ -182,7 +188,10 @@ def main():
     args = parser.parse_args()
 
     vault = Path(args.vault)
-    client = anthropic.Anthropic()
+    client = OpenAI(
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        base_url="https://openrouter.ai/api/v1",
+    )
 
     if args.force:
         # Mark all sources as uncompiled and clear hashes

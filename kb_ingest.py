@@ -12,12 +12,17 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import anthropic
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
 
 from kb_log import append_log
 
 VAULT = Path("/mnt/d/core")
-MODEL = "claude-sonnet-4-6"
+MODEL = "anthropic/claude-sonnet-4-6"
 
 
 def slugify(text: str) -> str:
@@ -85,9 +90,9 @@ def download_images(url: str, vault: Path) -> list[str]:
     return saved
 
 
-def interactive_discuss(content: str, title: str, client: anthropic.Anthropic) -> None:
+def interactive_discuss(content: str, title: str, client: OpenAI) -> None:
     """Call Claude to discuss key takeaways, then pause before saving."""
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=MODEL,
         max_tokens=1024,
         messages=[{
@@ -104,7 +109,7 @@ def interactive_discuss(content: str, title: str, client: anthropic.Anthropic) -
         }]
     )
     print("\n--- Key Takeaways Discussion ---")
-    print(response.content[0].text)
+    print(response.choices[0].message.content)
     print("--------------------------------")
     input("\nPress Enter to save to vault, or Ctrl+C to abort ... ")
 
@@ -162,7 +167,10 @@ def main():
         sys.exit(1)
 
     if args.interactive:
-        interactive_discuss(content, title, anthropic.Anthropic())
+        interactive_discuss(content, title, OpenAI(
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+        ))
 
     images = []
     if not args.no_images:

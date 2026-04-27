@@ -16,13 +16,18 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import anthropic
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv()
 
 from kb_log import append_log
 from kb_state import record_cost
 
 VAULT = Path("/mnt/d/core")
-MODEL = "claude-sonnet-4-6"
+MODEL = "anthropic/claude-sonnet-4-6"
 
 QUERY_SYSTEM = """You are a knowledge base research assistant. You answer questions by reasoning over a wiki of markdown articles.
 
@@ -63,12 +68,12 @@ def slugify(text: str) -> str:
     return text[:60]
 
 
-def find_relevant_concepts(client: anthropic.Anthropic, question: str, vault: Path) -> list[str]:
+def find_relevant_concepts(client: OpenAI, question: str, vault: Path) -> list[str]:
     index_content = read_file(vault / "wiki" / "_index.md")
     if not index_content.strip() or "Concepts: 0" in index_content:
         return []
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=MODEL,
         max_tokens=512,
         messages=[{
@@ -77,7 +82,7 @@ def find_relevant_concepts(client: anthropic.Anthropic, question: str, vault: Pa
         }]
     )
 
-    text = response.content[0].text.strip()
+    text = response.choices[0].message.content.strip()
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
@@ -100,7 +105,7 @@ def build_context(vault: Path, slugs: list[str]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def generate_answer(client: anthropic.Anthropic, question: str, context: str, fmt: str, model: str, vault: Path = None) -> str:
+def generate_answer(client: OpenAI, question: str, context: str, fmt: str, model: str, vault: Path = None) -> str:
     format_instruction = {
         "md": "Write a detailed markdown article answering the question.",
         "marp": "Write a Marp slide deck (marp: true frontmatter, --- slide separators) answering the question.",
@@ -114,15 +119,17 @@ Question: {question}
 Relevant knowledge base articles:
 {context if context else "(no matching articles found — answer from general knowledge and note the wiki lacks coverage on this topic)"}"""
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=model,
         max_tokens=4096,
-        system=QUERY_SYSTEM,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[
+            {"role": "system", "content": QUERY_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
     )
     if vault:
-        record_cost(vault, "query", response.usage.input_tokens, response.usage.output_tokens)
-    return response.content[0].text
+        record_cost(vault, "query", response.usage.prompt_tokens, response.usage.completion_tokens)
+    return response.choices[0].message.content
 
 
 def save_output(vault: Path, question: str, answer: str, fmt: str, file_into_wiki: bool) -> Path:
@@ -171,7 +178,10 @@ def main():
     args = parser.parse_args()
 
     vault = Path(args.vault)
-    client = anthropic.Anthropic()
+    client = OpenAI(
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        base_url="https://openrouter.ai/api/v1",
+    )
 
     print(f"Question: {args.question}")
     print("Finding relevant articles ...")
